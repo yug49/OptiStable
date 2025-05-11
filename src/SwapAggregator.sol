@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+//SPDX-License-Identifier: MIT
 
 pragma solidity ^0.8.20;
 
@@ -11,340 +11,477 @@ import {PoolKey} from "../lib/v4-periphery/lib/v4-core/src/types/PoolKey.sol";
 import {Currency} from "../lib/v4-periphery/lib/v4-core/src/types/Currency.sol";
 import {PathKey} from "../lib/v4-periphery/src/libraries/PathKey.sol";
 import {IHooks} from "../lib/v4-periphery/lib/v4-core/src/interfaces/IHooks.sol";
+import {IFactoryRegistry} from "../lib/contracts/contracts/interfaces/factories/IFactoryRegistry.sol";
+import {TickSpacings} from "./Constants.sol";
+import {IMixedRouteQuoterV1} from "./interfaces/ICL/IMixedRouteQuoterV1.sol";
+import {IUniswapXQuoter} from "./interfaces/IUniswapXQuoter.sol";
+import {IUniswapXReactor} from "./interfaces/IUniswapXReactor.sol";
+import {Commands} from "./libraries/Commands.sol";
+import {IQuoter} from "../lib/v3-periphery/contracts/interfaces/IQuoter.sol";
+import {IUniversalRouter} from "./interfaces/IUniversalRouter.sol";
 
-// Import constants
-import {AERODROME_ROUTER, UNISWAP_V2_ROUTER, UNISWAP_V4_ROUTER, UNISWAP_V4_QUOTER} from "./Constants.sol";
+/**
+ * @title Swap Aggregartor to manage swap functionalities
+ * @author Yug Agarwal
+ * @dev finds the optimal route of swap
+ */
+contract SwapAggregator is TickSpacings {
+    error SwapAggregator__NotOwner();
+    error SwapAggregator__InvalidAmount();
+    error SwapAggregator__InvalidRecipient();
 
-contract SwapAggregator {
-    address public immutable AERODROME_ROUTER;
-    address public immutable UNISWAP_V2_ROUTER;
-    address public immutable UNISWAP_V4_ROUTER;
-    address public immutable UNISWAP_V4_QUOTER;
+    address public immutable i_aerodomeRouter;
+    address public immutable i_uniswapV2Router;
+    address public immutable i_uniswapV4Router;
+    address public immutable i_uniswapV4Quoter;
+    address public immutable i_factoryRegistry;
+    address public immutable i_aerodromeMultiRouter;
+    address public immutable i_universalRouter;
+    address public immutable i_uniswapV3Quoter;
     address public owner;
     uint256 private constant DEADLINE = 20 minutes;
-    uint24 private constant DEFAULT_FEE = 3000; // 0.3% fee tier for Uniswap V4
+    uint24 private constant DEFAULT_UNISWAP_FEE = 3000; //0.3 %
+    int24 constant VOLATILE_BITMASK = 4194304;
+    int24 constant STABLE_BITMASK = 2097152;
+    
 
     enum SwapProtocol {
-        AERODROME,
+        AERODOME_V2,
+        AERODOME_V3,
+        UNISWAP_X,
         UNISWAP_V2,
+        UNISWAP_V3,
         UNISWAP_V4
     }
 
     event OptimalSwap(
         address indexed tokenIn,
         address indexed tokenOut,
-        uint256 amountIn,
         uint256 amountOut,
         address indexed recipient,
         SwapProtocol protocol
     );
 
+    /**
+     * @param _aerodromeRouter Address of the Aerodrome router
+     * @param _uniswapV2Router Address of the Uniswap V2 router
+     * @param _uniswapV4Router Address of the Uniswap V4 router
+     * @param _uniswapV4Quoter Address of the Uniswap V4 quoter
+     * @param _factoryRegistry Address of the factory registry
+     * @dev Constructor to initialize the contract with router addresses
+     */
     constructor(
         address _aerodromeRouter,
         address _uniswapV2Router,
+        address _uniswapV3Quoter,
         address _uniswapV4Router,
-        address _uniswapV4Quoter
+        address _uniswapV4Quoter,
+        address _factoryRegistry,
+        address _aerodromeMultiRouter,
+        address _universalRouter
     ) {
-        AERODROME_ROUTER = _aerodromeRouter;
-        UNISWAP_V2_ROUTER = _uniswapV2Router;
-        UNISWAP_V4_ROUTER = _uniswapV4Router;
-        UNISWAP_V4_QUOTER = _uniswapV4Quoter;
+        i_aerodomeRouter = _aerodromeRouter;
+        i_uniswapV2Router = _uniswapV2Router;
+        i_uniswapV4Router = _uniswapV4Router;
+        i_uniswapV4Quoter = _uniswapV4Quoter;
+        i_factoryRegistry = _factoryRegistry;
+        i_aerodromeMultiRouter = _aerodromeMultiRouter;
+        i_universalRouter = _universalRouter;
+        i_uniswapV3Quoter = _uniswapV3Quoter;
+
+        // Set the owner of the contract to the deployer
         owner = msg.sender;
     }
 
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Not authorized");
+    /**
+     * @dev Modifier to restrict access to the owner
+     */
+    modifier onOwner() {
+        if (msg.sender != owner) {
+            revert SwapAggregator__NotOwner();
+        }
         _;
     }
 
-    /**
-     * @notice Query Aerodrome router for expected output amount
-     * @param _tokenIn The input token
-     * @param _tokenOut The output token
-     * @param _amountIn The input amount
-     * @return The expected output amount
-     */
-    function getAmountOutAerodrome(address _tokenIn, address _tokenOut, uint256 _amountIn)
+    function getAmountOutAerodrome(address _tokenIn, address _tokenOut, uint256 _amountIn, address _recipient)
         public
-        view
-        virtual
-        returns (uint256)
+        returns (uint256 amountOut, SwapProtocol protocol)
     {
-        if (_amountIn == 0) return 0;
+        if (_amountIn == 0) revert SwapAggregator__InvalidAmount();
+        if (_recipient == address(0)) revert SwapAggregator__InvalidRecipient();
 
-        IRouter router = IRouter(AERODROME_ROUTER);
+        int24[] memory aerodromeTickSpacings = getAerodromeTickSpacings();
 
-        // Create route for a direct swap between tokens
-        IRouter.Route[] memory routes = new IRouter.Route[](1);
-        routes[0] = IRouter.Route({
-            from: _tokenIn,
-            to: _tokenOut,
-            stable: true, // Assuming stable path for stablecoins
-            factory: router.defaultFactory()
-        });
+        for (uint256 i = 0; i < aerodromeTickSpacings.length; i++) {
+            int24 tickSpacing = aerodromeTickSpacings[i];
 
-        try router.getAmountsOut(_amountIn, routes) returns (uint256[] memory amounts) {
-            // amounts[0] is input amount, amounts[1] is output amount
-            if (amounts.length >= 2) {
-                return amounts[amounts.length - 1];
-            }
-        } catch {
-            // If the stable route fails, try with volatile route
-            routes[0].stable = false;
-            try router.getAmountsOut(_amountIn, routes) returns (uint256[] memory amounts) {
-                if (amounts.length >= 2) {
-                    return amounts[amounts.length - 1];
+            if (tickSpacing & VOLATILE_BITMASK != 0) {
+                uint256 amountHere = IMixedRouteQuoterV1(i_aerodromeMultiRouter).quoteExactInputSingleV2(
+                    IMixedRouteQuoterV1.QuoteExactInputSingleV2Params({
+                        tokenIn: _tokenIn,
+                        tokenOut: _tokenOut,
+                        amountIn: _amountIn,
+                        stable: false
+                    })
+                );
+                if (amountHere > amountOut) {
+                    amountOut = amountHere;
+                    protocol = SwapProtocol.AERODOME_V2;
                 }
-            } catch {
-                return 0; // Return 0 if both attempts fail
+            } else if (tickSpacing & STABLE_BITMASK != 0) {
+                uint256 amountHere = IMixedRouteQuoterV1(i_aerodromeMultiRouter).quoteExactInputSingleV2(
+                    IMixedRouteQuoterV1.QuoteExactInputSingleV2Params({
+                        tokenIn: _tokenIn,
+                        tokenOut: _tokenOut,
+                        amountIn: _amountIn,
+                        stable: true
+                    })
+                );
+                if (amountHere > amountOut) {
+                    amountOut = amountHere;
+                    protocol = SwapProtocol.AERODOME_V2;
+                }
+            } else {
+                /// the outputs of prior swaps become the inputs to subsequent ones
+                (uint256 amountHere,,,) = IMixedRouteQuoterV1(i_aerodromeMultiRouter).quoteExactInputSingleV3(
+                    IMixedRouteQuoterV1.QuoteExactInputSingleV3Params({
+                        tokenIn: _tokenIn,
+                        tokenOut: _tokenOut,
+                        tickSpacing: tickSpacing,
+                        amountIn: _amountIn,
+                        sqrtPriceLimitX96: 0
+                    })
+                );
+                if (amountHere > amountOut) {
+                    amountOut = amountHere;
+                    protocol = SwapProtocol.AERODOME_V3;
+                }
+            }
+            i++;
+        }
+    }
+
+    function getAmountOutUniswapV4(address tokenIn, address tokenOut, uint256 amountIn, uint24[] memory poolFees)
+        public
+        returns (uint256 amountOut, SwapProtocol protocol){
+        if (amountIn == 0) revert SwapAggregator__InvalidAmount();
+        if (poolFees.length == 0) revert SwapAggregator__InvalidAmount();
+
+        for(uint i = 0 ; i < poolFees.length; i++) {
+            uint24 fee = poolFees[i];
+            (uint256 amountHere, ) = getAmountOutUniswapV3FromSpecificPool(
+                tokenIn,
+                tokenOut,
+                amountIn,
+                fee
+            );
+            if (amountHere > amountOut) {
+                amountOut = amountHere;
             }
         }
 
-        return 0;
+        protocol = SwapProtocol.UNISWAP_V4;
     }
 
-    /**
-     * @notice Query Uniswap V2 router for expected output amount
-     * @param _tokenIn The input token
-     * @param _tokenOut The output token
-     * @param _amountIn The input amount
-     * @return The expected output amount
-     */
-    function getAmountOutUniswapV2(address _tokenIn, address _tokenOut, uint256 _amountIn)
+    function getAmountOutUniswapV4FromSpecificPool(address tokenIn, address tokenOut, uint256 amountIn, uint24 fee)
+        public
+        returns (uint256 amountOut, SwapProtocol protocol)
+    {
+        try IQuoter(i_uniswapV3Quoter).quoteExactInputSingle(
+            tokenIn,
+            tokenOut,
+            fee,
+            amountIn,
+            0  // No price limit (sqrtPriceLimitX96 = 0)
+        ) returns (uint256 result) {
+            amountOut = result;
+            protocol = SwapProtocol.UNISWAP_V4;
+        } catch {
+            // If the quote fails (e.g., pool doesn't exist), return 0
+            amountOut = 0;
+            protocol = SwapProtocol.UNISWAP_V4;
+        }
+    }
+
+    function getAmountOutUniswapV3(address tokenIn, address tokenOut, uint256 amountIn, uint24[] memory poolFees)
+        public
+        returns (uint256 amountOut, SwapProtocol protocol){
+        if (amountIn == 0) revert SwapAggregator__InvalidAmount();
+        if (poolFees.length == 0) revert SwapAggregator__InvalidAmount();
+
+        for(uint i = 0 ; i < poolFees.length; i++) {
+            uint24 fee = poolFees[i];
+            (uint256 amountHere, ) = getAmountOutUniswapV3FromSpecificPool(
+                tokenIn,
+                tokenOut,
+                amountIn,
+                fee
+            );
+            if (amountHere > amountOut) {
+                amountOut = amountHere;
+            }
+        }
+
+        protocol = SwapProtocol.UNISWAP_V3;
+    }
+
+    function getAmountOutUniswapV3FromSpecificPool(address tokenIn, address tokenOut, uint256 amountIn, uint24 fee)
+        public
+        returns (uint256 amountOut, SwapProtocol protocol)
+    {
+        try IQuoter(i_uniswapV3Quoter).quoteExactInputSingle(
+            tokenIn,
+            tokenOut,
+            fee,
+            amountIn,
+            0  // No price limit (sqrtPriceLimitX96 = 0)
+        ) returns (uint256 result) {
+            amountOut = result;
+            protocol = SwapProtocol.UNISWAP_V3;
+        } catch {
+            // If the quote fails (e.g., pool doesn't exist), return 0
+            amountOut = 0;
+            protocol = SwapProtocol.UNISWAP_V3;
+        }
+    }
+
+    function getAmountOutUniswapV2(address tokenIn, address tokenOut, uint256 amountIn)
         public
         view
-        virtual
-        returns (uint256)
+        returns (uint256 amountOut, SwapProtocol protocol)
     {
-        if (_amountIn == 0) return 0;
+        address[] memory path = createPath(tokenIn, tokenOut);
+        amountOut = IUniswapV2Router02(i_uniswapV2Router).getAmountsOut(amountIn, path)[path.length - 1];
+        protocol = SwapProtocol.UNISWAP_V2;
+    }
 
-        IUniswapV2Router02 router = IUniswapV2Router02(UNISWAP_V2_ROUTER);
-
-        // Create the path for the swap
-        address[] memory path = new address[](2);
+    function createPath(address _tokenIn, address _tokenOut) internal pure returns (address[] memory path) {
+        path = new address[](2);
         path[0] = _tokenIn;
         path[1] = _tokenOut;
-
-        try router.getAmountsOut(_amountIn, path) returns (uint256[] memory amounts) {
-            if (amounts.length >= 2) {
-                return amounts[amounts.length - 1];
-            }
-        } catch {
-            return 0; // Return 0 if the call fails
-        }
-
-        return 0;
     }
 
-    /**
-     * @notice Query Uniswap V4 quoter for expected output amount
-     * @param _tokenIn The input token
-     * @param _tokenOut The output token
-     * @param _amountIn The input amount
-     * @return The expected output amount
-     */
-    function getAmountOutUniswapV4(address _tokenIn, address _tokenOut, uint256 _amountIn)
-        public
-        virtual
-        returns (uint256)
-    {
-        if (_amountIn == 0) return 0;
+    // /**
+    //  * @notice Execute a swap using Uniswap Universal Router
+    //  * @param _tokenIn Address of input token
+    //  * @param _tokenOut Address of output token
+    //  * @param _amountIn Amount of input token
+    //  * @param _amountOutMin Minimum amount of output token to receive
+    //  * @param _recipient Address to receive output tokens
+    //  * @param _version Which Uniswap version to use (2, 3, or 4)
+    //  * @return amountOut Amount of output tokens received
+    //  */
+    // function swapExactInputSingleUniversal(
+    //     address _tokenIn,
+    //     address _tokenOut,
+    //     uint256 _amountIn,
+    //     uint256 _amountOutMin,
+    //     address _recipient,
+    //     uint8 _version
+    // ) external returns (uint256 amountOut) {
+    //     if (_amountIn == 0) revert SwapAggregator__InvalidAmount();
+    //     if (_recipient == address(0)) revert SwapAggregator__InvalidRecipient();
+        
+    //     // Transfer tokens from sender to this contract
+    //     IERC20(_tokenIn).transferFrom(msg.sender, address(this), _amountIn);
+        
+    //     // Approve Universal Router to spend our tokens
+    //     IERC20(_tokenIn).approve(i_universalRouter, _amountIn);
+        
+    //     // Prepare the command and inputs based on Uniswap version
+    //     bytes memory commands;
+    //     bytes[] memory inputs = new bytes[](2);
+        
+    //     // First command: Permit2 transfer from this contract to Universal Router
+    //     commands = bytes.concat(Commands.PERMIT2_TRANSFER_FROM);
+        
+    //     // Second command: Execute the swap based on version
+    //     if (_version == 2) {
+    //         commands = bytes.concat(commands, Commands.V2_SWAP_EXACT_IN);
+            
+    //         // V2 swap parameters (recipient, amountOutMin, path)
+    //         address[] memory path = new address[](2);
+    //         path[0] = _tokenIn;
+    //         path[1] = _tokenOut;
+            
+    //         inputs[1] = abi.encode(
+    //             _recipient,              // recipient
+    //             _amountIn,               // amountIn
+    //             _amountOutMin,           // amountOutMin
+    //             path,                    // path
+    //             false                    // payerIsUser (false because our contract pays)
+    //         );
+    //     } else if (_version == 3) {
+    //         commands = bytes.concat(commands, Commands.V3_SWAP_EXACT_IN);
+            
+    //         // V3 swap parameters
+    //         bytes memory path = abi.encodePacked(
+    //             _tokenIn,                // tokenIn
+    //             uint24(3000),            // fee (0.3%)
+    //             _tokenOut                // tokenOut
+    //         );
+            
+    //         inputs[1] = abi.encode(
+    //             _recipient,              // recipient
+    //             _amountIn,               // amountIn
+    //             _amountOutMin,           // amountOutMin
+    //             path,                    // path
+    //             false                    // payerIsUser
+    //         );
+    //     } else if (_version == 4) {
+    //         commands = bytes.concat(commands, Commands.V4_SWAP_EXACT_IN);
+            
+    //         // V4 swap parameters
+    //         inputs[1] = abi.encode(
+    //             _recipient,              // recipient
+    //             _amountIn,               // amountIn
+    //             _amountOutMin,           // amountOutMin
+    //             _tokenIn,                // tokenIn
+    //             _tokenOut,               // tokenOut
+    //             uint24(3000),            // poolFee (0.3%)
+    //             false                    // payerIsUser
+    //         );
+    //     } else {
+    //         revert("Unsupported Uniswap version");
+    //     }
+        
+    //     // Permit2 transfer parameters
+    //     inputs[0] = abi.encode(
+    //         address(this),              // from
+    //         _tokenIn,                   // token
+    //         _amountIn                   // amount
+    //     );
+        
+    //     // Execute the commands with a 20-minute deadline
+    //     uint256 deadline = block.timestamp + DEADLINE;
+    //     IUniversalRouter(i_universalRouter).execute(commands, inputs, deadline);
+        
+    //     // Return actual amount received (would need to calculate this)
+    //     // For simplicity, we'll assume the swap succeeded with at least _amountOutMin
+    //     return _amountOutMin;
+    // }
+    
+    // /**
+    //  * @notice Execute a UniswapX order using Universal Router
+    //  * @param commands The encoded commands for Universal Router
+    //  * @param inputs The inputs for each command
+    //  * @dev This is a more flexible way to interact with Universal Router for complex swaps
+    //  */
+    // function executeWithUniversalRouter(
+    //     bytes calldata commands,
+    //     bytes[] calldata inputs
+    // ) external payable {
+    //     uint256 deadline = block.timestamp + DEADLINE;
+    //     IUniversalRouter(i_universalRouter).execute{value: msg.value}(commands, inputs, deadline);
+    // }
 
-        IV4Quoter quoter = IV4Quoter(UNISWAP_V4_QUOTER);
-
-        // Create a PoolKey for the exact token pair
-        PoolKey memory poolKey = _createPoolKey(_tokenIn, _tokenOut);
-
-        try quoter.quoteExactInputSingle(
-            IV4Quoter.QuoteExactSingleParams({
-                poolKey: poolKey,
-                zeroForOne: _tokenIn < _tokenOut,
-                exactAmount: uint128(_amountIn),
-                hookData: ""
-            })
-        ) returns (uint256 amountOut, uint256 gasEstimate) {
-            return amountOut;
-        } catch {
-            return 0; // Return 0 if the call fails
-        }
-    }
-
-    /**
-     * @notice Execute swap through the protocol offering the best rate
-     * @param _tokenIn The input token
-     * @param _tokenOut The output token
-     * @param _amountIn The input amount
-     * @param _recipient The recipient of the output tokens
-     * @return amountOut The amount of output tokens received
-     */
-    function executeOptimalSwap(address _tokenIn, address _tokenOut, uint256 _amountIn, address _recipient)
-        external
-        returns (uint256 amountOut)
-    {
-        require(_amountIn > 0, "Amount must be > 0");
-        require(_recipient != address(0), "Invalid recipient");
-
-        // Transfer tokens from sender to this contract
-        require(IERC20(_tokenIn).transferFrom(msg.sender, address(this), _amountIn), "Transfer failed");
-
-        // Get quotes from all protocols
-        uint256 aerodromeOut = getAmountOutAerodrome(_tokenIn, _tokenOut, _amountIn);
-        uint256 uniswapV2Out = getAmountOutUniswapV2(_tokenIn, _tokenOut, _amountIn);
-        uint256 uniswapV4Out = getAmountOutUniswapV4(_tokenIn, _tokenOut, _amountIn);
-
-        // Choose the protocol with the best rate
-        SwapProtocol protocol;
-
-        if (aerodromeOut >= uniswapV2Out && aerodromeOut >= uniswapV4Out && aerodromeOut > 0) {
-            protocol = SwapProtocol.AERODROME;
-            amountOut = _executeAerodromeSwap(_tokenIn, _tokenOut, _amountIn, _recipient);
-        } else if (uniswapV4Out >= uniswapV2Out && uniswapV4Out > 0) {
-            protocol = SwapProtocol.UNISWAP_V4;
-            amountOut = _executeUniswapV4Swap(_tokenIn, _tokenOut, _amountIn, _recipient);
-        } else if (uniswapV2Out > 0) {
-            protocol = SwapProtocol.UNISWAP_V2;
-            amountOut = _executeUniswapV2Swap(_tokenIn, _tokenOut, _amountIn, _recipient);
-        } else {
-            revert("No valid swap path");
-        }
-
-        emit OptimalSwap(_tokenIn, _tokenOut, _amountIn, amountOut, _recipient, protocol);
-
-        return amountOut;
-    }
-
-    /**
-     * @notice Execute swap through Aerodrome
-     * @dev Internal function called by executeOptimalSwap
-     */
-    function _executeAerodromeSwap(address _tokenIn, address _tokenOut, uint256 _amountIn, address _recipient)
-        internal
-        virtual
-        returns (uint256)
-    {
-        // Approve router to spend tokens
-        require(IERC20(_tokenIn).approve(AERODROME_ROUTER, _amountIn), "Approval failed");
-
-        IRouter router = IRouter(AERODROME_ROUTER);
-
-        // Create route
-        IRouter.Route[] memory routes = new IRouter.Route[](1);
-
-        // First try with stable route
-        routes[0] = IRouter.Route({from: _tokenIn, to: _tokenOut, stable: true, factory: router.defaultFactory()});
-
-        uint256 minAmountOut = (getAmountOutAerodrome(_tokenIn, _tokenOut, _amountIn) * 95) / 100; // 5% slippage
-        uint256[] memory amounts;
-
-        try router.swapExactTokensForTokens(_amountIn, minAmountOut, routes, _recipient, block.timestamp + DEADLINE)
-        returns (uint256[] memory _amounts) {
-            amounts = _amounts;
-        } catch {
-            // If stable route fails, try volatile route
-            routes[0].stable = false;
-            minAmountOut = (getAmountOutAerodrome(_tokenIn, _tokenOut, _amountIn) * 95) / 100;
-
-            amounts =
-                router.swapExactTokensForTokens(_amountIn, minAmountOut, routes, _recipient, block.timestamp + DEADLINE);
-        }
-
-        return amounts[amounts.length - 1];
-    }
-
-    /**
-     * @notice Execute swap through Uniswap V2
-     * @dev Internal function called by executeOptimalSwap
-     */
-    function _executeUniswapV2Swap(address _tokenIn, address _tokenOut, uint256 _amountIn, address _recipient)
-        internal
-        virtual
-        returns (uint256)
-    {
-        // Approve router to spend tokens
-        require(IERC20(_tokenIn).approve(UNISWAP_V2_ROUTER, _amountIn), "Approval failed");
-
-        // Get minimum output amount (5% slippage)
-        uint256 minAmountOut = (getAmountOutUniswapV2(_tokenIn, _tokenOut, _amountIn) * 95) / 100;
-
-        // Create the path for the swap
-        address[] memory path = new address[](2);
-        path[0] = _tokenIn;
-        path[1] = _tokenOut;
-
-        // Execute swap on Uniswap V2
-        uint256[] memory amounts = IUniswapV2Router02(UNISWAP_V2_ROUTER).swapExactTokensForTokens(
-            _amountIn, minAmountOut, path, _recipient, block.timestamp + DEADLINE
-        );
-
-        return amounts[amounts.length - 1];
-    }
-
-    /**
-     * @notice Execute swap through Uniswap V4
-     * @dev Internal function called by executeOptimalSwap
-     */
-    function _executeUniswapV4Swap(address _tokenIn, address _tokenOut, uint256 _amountIn, address _recipient)
-        internal
-        virtual
-        returns (uint256)
-    {
-        // Approve router to spend tokens
-        require(IERC20(_tokenIn).approve(UNISWAP_V4_ROUTER, _amountIn), "Approval failed");
-
-        // Get minimum output amount (5% slippage)
-        uint256 minAmountOut = (getAmountOutUniswapV4(_tokenIn, _tokenOut, _amountIn) * 95) / 100;
-
-        // Create a PoolKey for the exact token pair
-        PoolKey memory poolKey = _createPoolKey(_tokenIn, _tokenOut);
-
-        // Create swap params
-        IV4Router.ExactInputSingleParams memory params = IV4Router.ExactInputSingleParams({
-            poolKey: poolKey,
-            zeroForOne: _tokenIn < _tokenOut,
-            amountIn: uint128(_amountIn),
-            amountOutMinimum: uint128(minAmountOut),
-            hookData: ""
-        });
-
-        // Execute the swap via the V4 Router
-        // Due to V4's architecture, we need to handle this differently
-        // This is a simplified version - in practice you'd need to handle this with proper callback mechanisms
-
-        // For now, we'll return the expected amount as V4 integration is complex
-        return minAmountOut;
-    }
-
-    /**
-     * @notice Helper function to create a PoolKey for Uniswap V4
-     * @dev This is a simplified version and may need adjustment based on your specific V4 setup
-     */
-    function _createPoolKey(address tokenA, address tokenB) internal view returns (PoolKey memory) {
-        (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
-
-        return PoolKey({
-            currency0: Currency.wrap(token0),
-            currency1: Currency.wrap(token1),
-            fee: DEFAULT_FEE,
-            tickSpacing: 60, // Default tickSpacing for 0.3% fee tier
-            hooks: IHooks(address(0)) // No hooks for simplicity
-        });
-    }
-
-    /**
-     * @notice Set new owner
-     * @param _newOwner The address of the new owner
-     */
-    function setOwner(address _newOwner) external onlyOwner {
-        require(_newOwner != address(0), "Invalid address");
-        owner = _newOwner;
-    }
-
-    /**
-     * @notice Emergency function to recover stuck tokens
-     * @param _token The token to recover
-     * @param _amount The amount to recover
-     */
-    function recoverTokens(IERC20 _token, uint256 _amount) external onlyOwner {
-        require(_token.transfer(owner, _amount), "Recovery failed");
-    }
+    // /**
+    //  * @notice Execute a swap using the optimal protocol
+    //  * @param _tokenIn Address of input token
+    //  * @param _tokenOut Address of output token
+    //  * @param _amountIn Amount of input token
+    //  * @param _amountOutMin Minimum amount of output token
+    //  * @param _recipient Address to receive output tokens
+    //  * @return amountOut Actual amount of output tokens received
+    //  * @return protocolUsed The protocol that was used for the swap
+    //  */
+    // function swapWithOptimalProtocol(
+    //     address _tokenIn,
+    //     address _tokenOut,
+    //     uint256 _amountIn,
+    //     uint256 _amountOutMin,
+    //     address _recipient
+    // ) external payable returns (uint256 amountOut, SwapProtocol protocolUsed) {
+    //     // Get the optimal swap route
+    //     (uint256 expectedOut, SwapProtocol protocol) = getAmountOutFromOptimalSwap(_tokenIn, _tokenOut, _amountIn, _recipient);
+        
+    //     // Require that we get at least the minimum amount expected
+    //     require(expectedOut >= _amountOutMin, "Insufficient output amount");
+        
+    //     // Transfer the input tokens from the sender
+    //     IERC20(_tokenIn).transferFrom(msg.sender, address(this), _amountIn);
+        
+    //     // Execute the swap using the optimal protocol
+    //     if (protocol == SwapProtocol.AERODOME_V2 || protocol == SwapProtocol.AERODOME_V3) {
+    //         // Execute Aerodrome swap
+    //         IERC20(_tokenIn).approve(i_aerodomeRouter, _amountIn);
+    //         // Execute Aerodrome swap (implementation not shown)
+    //     } 
+    //     else {
+    //         // For all Uniswap variants, use the Universal Router
+    //         IERC20(_tokenIn).approve(i_universalRouter, _amountIn);
+            
+    //         bytes memory commands;
+    //         bytes[] memory inputs = new bytes[](2);
+            
+    //         // Permit2 transfer
+    //         inputs[0] = abi.encode(
+    //             address(this),              // from
+    //             _tokenIn,                   // token
+    //             _amountIn                   // amount
+    //         );
+            
+    //         if (protocol == SwapProtocol.UNISWAP_V2) {
+    //             commands = bytes.concat(Commands.PERMIT2_TRANSFER_FROM, Commands.V2_SWAP_EXACT_IN);
+                
+    //             // V2 swap parameters
+    //             address[] memory path = new address[](2);
+    //             path[0] = _tokenIn;
+    //             path[1] = _tokenOut;
+                
+    //             inputs[1] = abi.encode(
+    //                 _recipient,              // recipient
+    //                 _amountIn,               // amountIn
+    //                 _amountOutMin,           // amountOutMin
+    //                 path,                    // path
+    //                 false                    // payerIsUser
+    //             );
+    //         } 
+    //         else if (protocol == SwapProtocol.UNISWAP_V3) {
+    //             commands = bytes.concat(Commands.PERMIT2_TRANSFER_FROM, Commands.V3_SWAP_EXACT_IN);
+                
+    //             // V3 swap parameters
+    //             bytes memory path = abi.encodePacked(
+    //                 _tokenIn,                // tokenIn
+    //                 uint24(3000),            // fee (0.3%)
+    //                 _tokenOut                // tokenOut
+    //             );
+                
+    //             inputs[1] = abi.encode(
+    //                 _recipient,              // recipient
+    //                 _amountIn,               // amountIn
+    //                 _amountOutMin,           // amountOutMin
+    //                 path,                    // path
+    //                 false                    // payerIsUser
+    //             );
+    //         }
+    //         else if (protocol == SwapProtocol.UNISWAP_X) {
+    //             // For UniswapX, we use the V3 route through Universal Router
+    //             commands = bytes.concat(Commands.PERMIT2_TRANSFER_FROM, Commands.V3_SWAP_EXACT_IN);
+                
+    //             // V3 swap parameters with optimized settings for UniswapX-like execution
+    //             bytes memory path = abi.encodePacked(
+    //                 _tokenIn,                // tokenIn
+    //                 uint24(3000),            // fee (0.3%)
+    //                 _tokenOut                // tokenOut
+    //             );
+                
+    //             inputs[1] = abi.encode(
+    //                 _recipient,              // recipient
+    //                 _amountIn,               // amountIn
+    //                 _amountOutMin,           // amountOutMin
+    //                 path,                    // path
+    //                 false                    // payerIsUser
+    //             );
+    //         }
+            
+    //         // Execute the commands
+    //         uint256 deadline = block.timestamp + DEADLINE;
+    //         IUniversalRouter(i_universalRouter).execute{value: msg.value}(commands, inputs, deadline);
+    //     }
+        
+    //     // For simplicity, we return the expected output amount
+    //     // In production, you'd want to check the actual output amount
+    //     return (expectedOut, protocol);
+    // }
 }
