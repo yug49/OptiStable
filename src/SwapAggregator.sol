@@ -17,8 +17,11 @@ import {IMixedRouteQuoterV1} from "./interfaces/ICL/IMixedRouteQuoterV1.sol";
 import {IUniswapXQuoter} from "./interfaces/IUniswapXQuoter.sol";
 import {IUniswapXReactor} from "./interfaces/IUniswapXReactor.sol";
 import {Commands} from "./libraries/Commands.sol";
-import {IQuoter} from "../lib/v3-periphery/contracts/interfaces/IQuoter.sol";
+import {IQuoterV2} from "../lib/v3-periphery/contracts/interfaces/IQuoterV2.sol";
 import {IUniversalRouter} from "./interfaces/IUniversalRouter.sol";
+import {PoolKey} from "../lib/v4-periphery/lib/v4-core/src/types/PoolKey.sol";
+import {IHooks} from "../lib/v4-periphery/lib/v4-core/src/interfaces/IHooks.sol";
+import {ICurrency} from "../lib/v4-periphery/lib/v4-core/src/interfaces/ICurrency.sol";
 
 /**
  * @title Swap Aggregartor to manage swap functionalities
@@ -29,6 +32,8 @@ contract SwapAggregator is TickSpacings {
     error SwapAggregator__NotOwner();
     error SwapAggregator__InvalidAmount();
     error SwapAggregator__InvalidRecipient();
+    error SwapAggregator__InvalidTokenAddresses();
+    error SwapAggregator__InvalidPoolFees();
 
     address public immutable i_aerodomeRouter;
     address public immutable i_uniswapV2Router;
@@ -103,12 +108,23 @@ contract SwapAggregator is TickSpacings {
         _;
     }
 
+    /**
+     * @dev Gets optimal swap by analyzing all the pools of a token pair in aerodrome
+     * @param _tokenIn token to swap from
+     * @param _tokenOut token to swap to
+     * @param _amountIn amount to swap
+     * @param _recipient address of the recipient
+     * @return amountOut amount received after the swap
+     * @return protocol protocol used for the swap
+     */
     function getAmountOutAerodrome(address _tokenIn, address _tokenOut, uint256 _amountIn, address _recipient)
         public
         returns (uint256 amountOut, SwapProtocol protocol)
     {
         if (_amountIn == 0) revert SwapAggregator__InvalidAmount();
         if (_recipient == address(0)) revert SwapAggregator__InvalidRecipient();
+        if (_tokenIn == address(0) || _tokenOut == address(0)) revert SwapAggregator__InvalidTokenAddresses();
+        if(_tokenIn == _tokenOut) revert SwapAggregator__InvalidTokenAddresses();
 
         int24[] memory aerodromeTickSpacings = getAerodromeTickSpacings();
 
@@ -161,11 +177,22 @@ contract SwapAggregator is TickSpacings {
         }
     }
 
+    /**
+     * @dev Gets the optimal swap amount out from uniswap v4 by analazing all the pools of a given token pair
+     * @param tokenIn address of token to swap from
+     * @param tokenOut address of token to swap to
+     * @param amountIn amount of token to swap
+     * @param poolFees array of pool fees of all available pools of a given token pair in uniswap v3
+     * @return amountOut amount of token received after the swap
+     * @return protocol protocol used for the swap
+     */
     function getAmountOutUniswapV4(address tokenIn, address tokenOut, uint256 amountIn, uint24[] memory poolFees)
         public
         returns (uint256 amountOut, SwapProtocol protocol){
         if (amountIn == 0) revert SwapAggregator__InvalidAmount();
-        if (poolFees.length == 0) revert SwapAggregator__InvalidAmount();
+        if (poolFees.length == 0) revert SwapAggregator__InvalidPoolFees();
+        if (tokenIn == address(0) || tokenOut == address(0)) revert SwapAggregator__InvalidTokenAddresses();
+        if (tokenIn == tokenOut) revert SwapAggregator__InvalidTokenAddresses();
 
         for(uint i = 0 ; i < poolFees.length; i++) {
             uint24 fee = poolFees[i];
@@ -183,17 +210,44 @@ contract SwapAggregator is TickSpacings {
         protocol = SwapProtocol.UNISWAP_V4;
     }
 
+    /**
+     * @dev Gets the optimal swap amount out from uniswap v4 from a specific pool identified by the fee
+     * @param tokenIn address of token to swap from
+     * @param tokenOut address of token to swap to
+     * @param amountIn amount of token to swap
+     * @param fee fee for the swap
+     * @return amountOut amount of token received after the swap
+     * @return protocol protocol used for the swap
+     */
     function getAmountOutUniswapV4FromSpecificPool(address tokenIn, address tokenOut, uint256 amountIn, uint24 fee)
         public
         returns (uint256 amountOut, SwapProtocol protocol)
-    {
-        try IQuoter(i_uniswapV3Quoter).quoteExactInputSingle(
-            tokenIn,
-            tokenOut,
-            fee,
-            amountIn,
-            0  // No price limit (sqrtPriceLimitX96 = 0)
-        ) returns (uint256 result) {
+    {   
+        if (amountIn == 0) revert SwapAggregator__InvalidAmount();
+        if (fee == 0) revert SwapAggregator__InvalidPoolFees();
+        if (tokenIn == address(0) || tokenOut == address(0)) revert SwapAggregator__InvalidTokenAddresses();
+        if (tokenIn == tokenOut) revert SwapAggregator__InvalidTokenAddresses();
+
+        Currency currency0 = tokenIn < tokenOut ? Currency.wrap(tokenIn) : Currency.wrap(tokenOut);
+        Currency currency1 = tokenIn < tokenOut ? Currency.wrap(tokenOut) : Currency.wrap(tokenIn);
+        IHooks hooks = IHooks(address(0));
+
+        try IV4Quoter(i_uniswapV4Quoter).quoteExactInputSingle(
+                IV4Quoter.QuoteExactSingleParams({
+                    poolKey: PoolKey({
+                        currency0: currency0,
+                        currency1: currency1,
+                        fee: fee,
+                        tickSpacing: 
+                    }),
+                    zeroForOne: tokenIn < tokenOut ? true : false,
+                    exactAmount: uint128(amountIn),
+                    hookData: ""
+                })
+        ) returns (
+            uint256 result,
+            uint256 /* gasEstimate */
+        ) {
             amountOut = result;
             protocol = SwapProtocol.UNISWAP_V4;
         } catch {
@@ -203,11 +257,23 @@ contract SwapAggregator is TickSpacings {
         }
     }
 
+    /**
+     * @dev Gets the optimal swap amount out from uniswap v3 by analyzing all the pools of a given token pair
+     * @param tokenIn address of token to swap from
+     * @param tokenOut address of token to swap to
+     * @param amountIn amount of token to swap
+     * @param poolFees array of pool fees of all available pools of a given token pair in uniswap v3
+     * @return amountOut amount of token received after the swap
+     * @return protocol protocol used for the swap
+     */
     function getAmountOutUniswapV3(address tokenIn, address tokenOut, uint256 amountIn, uint24[] memory poolFees)
         public
         returns (uint256 amountOut, SwapProtocol protocol){
         if (amountIn == 0) revert SwapAggregator__InvalidAmount();
-        if (poolFees.length == 0) revert SwapAggregator__InvalidAmount();
+        if (poolFees.length == 0) revert SwapAggregator__InvalidPoolFees();
+        if (tokenIn == address(0) || tokenOut == address(0)) revert SwapAggregator__InvalidTokenAddresses();
+        if (tokenIn == tokenOut) revert SwapAggregator__InvalidTokenAddresses();
+
 
         for(uint i = 0 ; i < poolFees.length; i++) {
             uint24 fee = poolFees[i];
@@ -225,17 +291,38 @@ contract SwapAggregator is TickSpacings {
         protocol = SwapProtocol.UNISWAP_V3;
     }
 
+    /**
+     * @dev Gets the optimal swap amount out from uniswap v3 from a specific pool identified by the fee
+     * @param tokenIn address of token to swap from
+     * @param tokenOut address of token to swap to
+     * @param amountIn amount of token to swap
+     * @param fee fee for the swap
+     * @return amountOut amount of token received after the swap
+     * @return protocol protocol used for the swap
+     */
     function getAmountOutUniswapV3FromSpecificPool(address tokenIn, address tokenOut, uint256 amountIn, uint24 fee)
         public
         returns (uint256 amountOut, SwapProtocol protocol)
-    {
-        try IQuoter(i_uniswapV3Quoter).quoteExactInputSingle(
-            tokenIn,
-            tokenOut,
-            fee,
-            amountIn,
-            0  // No price limit (sqrtPriceLimitX96 = 0)
-        ) returns (uint256 result) {
+    {   
+        if (amountIn == 0) revert SwapAggregator__InvalidAmount();
+        if (fee == 0) revert SwapAggregator__InvalidPoolFees();
+        if (tokenIn == address(0) || tokenOut == address(0)) revert SwapAggregator__InvalidTokenAddresses();
+        if (tokenIn == tokenOut) revert SwapAggregator__InvalidTokenAddresses();
+
+        try IQuoterV2(i_uniswapV3Quoter).quoteExactInputSingle(
+                IQuoterV2.QuoteExactInputSingleParams({
+                    tokenIn: tokenIn,
+                    tokenOut: tokenOut,
+                    amountIn: amountIn,
+                    fee: fee,
+                    sqrtPriceLimitX96: 0 // No price limit (sqrtPriceLimitX96 = 0)
+                })
+        ) returns (
+            uint256 result,
+            uint160 /* sqrtPriceX96After */,
+            uint32  /* initializedTicksCrossed */,
+            uint256 /* gasEstimate */
+        ) {
             amountOut = result;
             protocol = SwapProtocol.UNISWAP_V3;
         } catch {
@@ -245,16 +332,33 @@ contract SwapAggregator is TickSpacings {
         }
     }
 
+    /**
+     * @dev Gets the optimal swap amount out from uniswap v2
+     * @param tokenIn address of token to swap from
+     * @param tokenOut address of token to swap to
+     * @param amountIn amount of token to swap
+     * @return amountOut amount of token received after the swap
+     * @return protocol protocol used for the swap
+     */
     function getAmountOutUniswapV2(address tokenIn, address tokenOut, uint256 amountIn)
         public
         view
         returns (uint256 amountOut, SwapProtocol protocol)
-    {
+    {   
+        if (amountIn == 0) revert SwapAggregator__InvalidAmount();
+        if (tokenIn == address(0) || tokenOut == address(0)) revert SwapAggregator__InvalidTokenAddresses();
+        if (tokenIn == tokenOut) revert SwapAggregator__InvalidTokenAddresses();
+
         address[] memory path = createPath(tokenIn, tokenOut);
         amountOut = IUniswapV2Router02(i_uniswapV2Router).getAmountsOut(amountIn, path)[path.length - 1];
         protocol = SwapProtocol.UNISWAP_V2;
     }
 
+    /**
+     * @dev Creates a path for the swap using uniswap v2
+     * @param _tokenIn address of token to swap from
+     * @param _tokenOut address of token to swap to
+     */
     function createPath(address _tokenIn, address _tokenOut) internal pure returns (address[] memory path) {
         path = new address[](2);
         path[0] = _tokenIn;

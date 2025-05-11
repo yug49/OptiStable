@@ -9,6 +9,7 @@ import {IRouter} from "../lib/contracts/contracts/interfaces/IRouter.sol";
 import {IFactoryRegistry} from "../lib/contracts/contracts/interfaces/factories/IFactoryRegistry.sol";
 import {IMixedRouteQuoterV1} from "../src/interfaces/ICL/IMixedRouteQuoterV1.sol";
 import {IV4Quoter} from "../lib/v4-periphery/src/interfaces/IV4Quoter.sol";
+import {IQuoterV2} from "../lib/v3-periphery/contracts/interfaces/IQuoterV2.sol";
 
 // Import constants
 import {
@@ -24,7 +25,7 @@ import {
     TickSpacings,
     AERODROME_MULTI_ROUTER,
     UNISWAP_UNIVERSAL_ROUTER,
-    UNISWAP_V3_QUOTER
+    UNISWAP_V3_QUOTER_V2
 } from "../src/Constants.sol";
 
 contract SwapAggregatorTest is Test, TickSpacings {
@@ -44,7 +45,7 @@ contract SwapAggregatorTest is Test, TickSpacings {
         swapAggregator = new SwapAggregator(
             AERODROME_ROUTER,
             UNISWAP_V2_ROUTER,
-            UNISWAP_V3_QUOTER,
+            UNISWAP_V3_QUOTER_V2,
             UNISWAP_V4_ROUTER,
             UNISWAP_V4_QUOTER,
             FACTORY_REGISTRY,
@@ -192,6 +193,8 @@ contract SwapAggregatorTest is Test, TickSpacings {
         (uint256 amountOut,) = swapAggregator.getAmountOutUniswapV3FromSpecificPool(_tokenIn, _tokenOut, _amountIn, 500);
         console.log("Uniswap V3 amount out:", amountOut);
     }
+
+    
 
     // function testGetAmountOutUniswapV2UsingUniversalRouter() public {
     //     uint256 _amountIn = 1000 * 1e6;
