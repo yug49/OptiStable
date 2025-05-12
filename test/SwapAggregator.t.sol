@@ -194,7 +194,18 @@ contract SwapAggregatorTest is Test, TickSpacings {
         console.log("Uniswap V3 amount out:", amountOut);
     }
 
-    
+    function testGetAmountOutUniswapV4() public {
+        uint256 _amountIn = 1000 * 1e6;
+        address _tokenIn = USDC;
+        address _tokenOut = EURC;
+        uint24 fee = 200;
+        int24 tickSpacing = 50;
+        address hook = 0x5cd525c621AFCa515Bf58631D4733fbA7B72Aae4;
+
+        vm.prank(USER);
+        (uint256 amountOut,) = swapAggregator.getAmountOutUniswapV4FromSpecificPool(_tokenIn, _tokenOut, _amountIn, fee, tickSpacing, hook);
+        console.log("Uniswap V4 amount out:", amountOut);
+    }
 
     // function testGetAmountOutUniswapV2UsingUniversalRouter() public {
     //     uint256 _amountIn = 1000 * 1e6;

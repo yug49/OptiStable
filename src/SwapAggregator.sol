@@ -21,7 +21,6 @@ import {IQuoterV2} from "../lib/v3-periphery/contracts/interfaces/IQuoterV2.sol"
 import {IUniversalRouter} from "./interfaces/IUniversalRouter.sol";
 import {PoolKey} from "../lib/v4-periphery/lib/v4-core/src/types/PoolKey.sol";
 import {IHooks} from "../lib/v4-periphery/lib/v4-core/src/interfaces/IHooks.sol";
-import {ICurrency} from "../lib/v4-periphery/lib/v4-core/src/interfaces/ICurrency.sol";
 
 /**
  * @title Swap Aggregartor to manage swap functionalities
@@ -65,6 +64,13 @@ contract SwapAggregator is TickSpacings {
         uint256 amountOut,
         address indexed recipient,
         SwapProtocol protocol
+    );
+
+    event UniswapV4SwapExecuted(
+        uint256 amountOut,
+        address indexed tokenIn,
+        address indexed tokenOut,
+        uint256 amountIn
     );
 
     /**
@@ -178,6 +184,22 @@ contract SwapAggregator is TickSpacings {
     }
 
     /**
+     * @dev subgraph query
+        {
+          eurc_usdc: pools(
+            where: {
+              token0: "0x60a3e35cc302bfa44cb288bc5a4f316fdb1adb42",
+              token1: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+            }
+          ) {
+            id
+            feeTier
+            tickSpacing
+            hooks
+          }
+        }
+     */
+    /**
      * @dev Gets the optimal swap amount out from uniswap v4 by analazing all the pools of a given token pair
      * @param tokenIn address of token to swap from
      * @param tokenOut address of token to swap to
@@ -186,7 +208,7 @@ contract SwapAggregator is TickSpacings {
      * @return amountOut amount of token received after the swap
      * @return protocol protocol used for the swap
      */
-    function getAmountOutUniswapV4(address tokenIn, address tokenOut, uint256 amountIn, uint24[] memory poolFees)
+    function getAmountOutUniswapV4(address tokenIn, address tokenOut, uint256 amountIn, uint24[] memory poolFees, int24[] memory tickSpacings, address[] memory hooks)
         public
         returns (uint256 amountOut, SwapProtocol protocol){
         if (amountIn == 0) revert SwapAggregator__InvalidAmount();
@@ -196,11 +218,15 @@ contract SwapAggregator is TickSpacings {
 
         for(uint i = 0 ; i < poolFees.length; i++) {
             uint24 fee = poolFees[i];
-            (uint256 amountHere, ) = getAmountOutUniswapV3FromSpecificPool(
+            int24 tickSpacing = tickSpacings[i];
+            address hook = hooks[i];
+            (uint256 amountHere, ) = getAmountOutUniswapV4FromSpecificPool(
                 tokenIn,
                 tokenOut,
                 amountIn,
-                fee
+                fee,
+                tickSpacing,
+                hook
             );
             if (amountHere > amountOut) {
                 amountOut = amountHere;
@@ -219,7 +245,7 @@ contract SwapAggregator is TickSpacings {
      * @return amountOut amount of token received after the swap
      * @return protocol protocol used for the swap
      */
-    function getAmountOutUniswapV4FromSpecificPool(address tokenIn, address tokenOut, uint256 amountIn, uint24 fee)
+    function getAmountOutUniswapV4FromSpecificPool(address tokenIn, address tokenOut, uint256 amountIn, uint24 fee, int24 tickSpacing, address hook)
         public
         returns (uint256 amountOut, SwapProtocol protocol)
     {   
@@ -230,7 +256,7 @@ contract SwapAggregator is TickSpacings {
 
         Currency currency0 = tokenIn < tokenOut ? Currency.wrap(tokenIn) : Currency.wrap(tokenOut);
         Currency currency1 = tokenIn < tokenOut ? Currency.wrap(tokenOut) : Currency.wrap(tokenIn);
-        IHooks hooks = IHooks(address(0));
+        IHooks hooks = IHooks(hook);
 
         try IV4Quoter(i_uniswapV4Quoter).quoteExactInputSingle(
                 IV4Quoter.QuoteExactSingleParams({
@@ -238,7 +264,8 @@ contract SwapAggregator is TickSpacings {
                         currency0: currency0,
                         currency1: currency1,
                         fee: fee,
-                        tickSpacing: 
+                        tickSpacing: tickSpacing,
+                        hooks: hooks
                     }),
                     zeroForOne: tokenIn < tokenOut ? true : false,
                     exactAmount: uint128(amountIn),
@@ -256,6 +283,56 @@ contract SwapAggregator is TickSpacings {
             protocol = SwapProtocol.UNISWAP_V4;
         }
     }
+
+    // /**
+    //  * @dev Gets the optimal swap amount out from uniswap v4 from a specific pool identified by the fee
+    //  * @param tokenIn address of token to swap from
+    //  * @param tokenOut address of token to swap to
+    //  * @param amountIn amount of token to swap
+    //  * @param fee fee for the swap
+    //  * @return amountOut amount of token received after the swap
+    //  * @return protocol protocol used for the swap
+    //  */
+    // function swapUniswapV4FromSpecificPool(address tokenIn, address tokenOut, uint256 amountIn, uint24 fee, int24 tickSpacing, address hook)
+    //     public
+    //     returns (uint256 amountOut, SwapProtocol protocol)
+    // {   
+    //     if (amountIn == 0) revert SwapAggregator__InvalidAmount();
+    //     if (fee == 0) revert SwapAggregator__InvalidPoolFees();
+    //     if (tokenIn == address(0) || tokenOut == address(0)) revert SwapAggregator__InvalidTokenAddresses();
+    //     if (tokenIn == tokenOut) revert SwapAggregator__InvalidTokenAddresses();
+
+    //     Currency currency0 = tokenIn < tokenOut ? Currency.wrap(tokenIn) : Currency.wrap(tokenOut);
+    //     Currency currency1 = tokenIn < tokenOut ? Currency.wrap(tokenOut) : Currency.wrap(tokenIn);
+    //     IHooks hooks = IHooks(hook);
+
+    //     try IV4Router(i_uniswapV4Router).quoteExactInputSingle(
+    //             IV4Router.ExactInputSingleParams({
+    //                 poolKey: PoolKey({
+    //                     currency0: currency0,
+    //                     currency1: currency1,
+    //                     fee: fee,
+    //                     tickSpacing: tickSpacing,
+    //                     hooks: hooks
+    //                 }),
+    //                 zeroForOne: tokenIn < tokenOut ? true : false,
+    //                 exactAmount: uint128(amountIn),
+    //                 hookData: ""
+    //             })
+    //     ) returns (
+    //         uint256 result,
+    //         uint256 /* gasEstimate */
+    //     ) {
+    //         amountOut = result;
+    //         protocol = SwapProtocol.UNISWAP_V4;
+    //     } catch {
+    //         // If the quote fails (e.g., pool doesn't exist), return 0
+    //         amountOut = 0;
+    //         protocol = SwapProtocol.UNISWAP_V4;
+    //     }
+
+    //     emit UniswapV4SwapExecuted(amountOut, tokenIn, tokenOut, amountIn);
+    // }
 
     /**
      * @dev Gets the optimal swap amount out from uniswap v3 by analyzing all the pools of a given token pair
@@ -332,6 +409,8 @@ contract SwapAggregator is TickSpacings {
         }
     }
 
+    
+
     /**
      * @dev Gets the optimal swap amount out from uniswap v2
      * @param tokenIn address of token to swap from
@@ -381,13 +460,16 @@ contract SwapAggregator is TickSpacings {
     //     uint256 _amountIn,
     //     uint256 _amountOutMin,
     //     address _recipient,
-    //     uint8 _version
+    //     uint8 _version,
+    //     uint24 _poolFee,
+    //     int24 _tickSpacing,
+    //     address _hook
     // ) external returns (uint256 amountOut) {
     //     if (_amountIn == 0) revert SwapAggregator__InvalidAmount();
     //     if (_recipient == address(0)) revert SwapAggregator__InvalidRecipient();
         
     //     // Transfer tokens from sender to this contract
-    //     IERC20(_tokenIn).transferFrom(msg.sender, address(this), _amountIn);
+    //     IERC20(_tokenIn).transferFrom(_recipient, address(this), _amountIn);
         
     //     // Approve Universal Router to spend our tokens
     //     IERC20(_tokenIn).approve(i_universalRouter, _amountIn);
@@ -421,7 +503,7 @@ contract SwapAggregator is TickSpacings {
     //         // V3 swap parameters
     //         bytes memory path = abi.encodePacked(
     //             _tokenIn,                // tokenIn
-    //             uint24(3000),            // fee (0.3%)
+    //             _poolFee,            // fee (0.3%)
     //             _tokenOut                // tokenOut
     //         );
             
@@ -479,113 +561,5 @@ contract SwapAggregator is TickSpacings {
     //     IUniversalRouter(i_universalRouter).execute{value: msg.value}(commands, inputs, deadline);
     // }
 
-    // /**
-    //  * @notice Execute a swap using the optimal protocol
-    //  * @param _tokenIn Address of input token
-    //  * @param _tokenOut Address of output token
-    //  * @param _amountIn Amount of input token
-    //  * @param _amountOutMin Minimum amount of output token
-    //  * @param _recipient Address to receive output tokens
-    //  * @return amountOut Actual amount of output tokens received
-    //  * @return protocolUsed The protocol that was used for the swap
-    //  */
-    // function swapWithOptimalProtocol(
-    //     address _tokenIn,
-    //     address _tokenOut,
-    //     uint256 _amountIn,
-    //     uint256 _amountOutMin,
-    //     address _recipient
-    // ) external payable returns (uint256 amountOut, SwapProtocol protocolUsed) {
-    //     // Get the optimal swap route
-    //     (uint256 expectedOut, SwapProtocol protocol) = getAmountOutFromOptimalSwap(_tokenIn, _tokenOut, _amountIn, _recipient);
-        
-    //     // Require that we get at least the minimum amount expected
-    //     require(expectedOut >= _amountOutMin, "Insufficient output amount");
-        
-    //     // Transfer the input tokens from the sender
-    //     IERC20(_tokenIn).transferFrom(msg.sender, address(this), _amountIn);
-        
-    //     // Execute the swap using the optimal protocol
-    //     if (protocol == SwapProtocol.AERODOME_V2 || protocol == SwapProtocol.AERODOME_V3) {
-    //         // Execute Aerodrome swap
-    //         IERC20(_tokenIn).approve(i_aerodomeRouter, _amountIn);
-    //         // Execute Aerodrome swap (implementation not shown)
-    //     } 
-    //     else {
-    //         // For all Uniswap variants, use the Universal Router
-    //         IERC20(_tokenIn).approve(i_universalRouter, _amountIn);
-            
-    //         bytes memory commands;
-    //         bytes[] memory inputs = new bytes[](2);
-            
-    //         // Permit2 transfer
-    //         inputs[0] = abi.encode(
-    //             address(this),              // from
-    //             _tokenIn,                   // token
-    //             _amountIn                   // amount
-    //         );
-            
-    //         if (protocol == SwapProtocol.UNISWAP_V2) {
-    //             commands = bytes.concat(Commands.PERMIT2_TRANSFER_FROM, Commands.V2_SWAP_EXACT_IN);
-                
-    //             // V2 swap parameters
-    //             address[] memory path = new address[](2);
-    //             path[0] = _tokenIn;
-    //             path[1] = _tokenOut;
-                
-    //             inputs[1] = abi.encode(
-    //                 _recipient,              // recipient
-    //                 _amountIn,               // amountIn
-    //                 _amountOutMin,           // amountOutMin
-    //                 path,                    // path
-    //                 false                    // payerIsUser
-    //             );
-    //         } 
-    //         else if (protocol == SwapProtocol.UNISWAP_V3) {
-    //             commands = bytes.concat(Commands.PERMIT2_TRANSFER_FROM, Commands.V3_SWAP_EXACT_IN);
-                
-    //             // V3 swap parameters
-    //             bytes memory path = abi.encodePacked(
-    //                 _tokenIn,                // tokenIn
-    //                 uint24(3000),            // fee (0.3%)
-    //                 _tokenOut                // tokenOut
-    //             );
-                
-    //             inputs[1] = abi.encode(
-    //                 _recipient,              // recipient
-    //                 _amountIn,               // amountIn
-    //                 _amountOutMin,           // amountOutMin
-    //                 path,                    // path
-    //                 false                    // payerIsUser
-    //             );
-    //         }
-    //         else if (protocol == SwapProtocol.UNISWAP_X) {
-    //             // For UniswapX, we use the V3 route through Universal Router
-    //             commands = bytes.concat(Commands.PERMIT2_TRANSFER_FROM, Commands.V3_SWAP_EXACT_IN);
-                
-    //             // V3 swap parameters with optimized settings for UniswapX-like execution
-    //             bytes memory path = abi.encodePacked(
-    //                 _tokenIn,                // tokenIn
-    //                 uint24(3000),            // fee (0.3%)
-    //                 _tokenOut                // tokenOut
-    //             );
-                
-    //             inputs[1] = abi.encode(
-    //                 _recipient,              // recipient
-    //                 _amountIn,               // amountIn
-    //                 _amountOutMin,           // amountOutMin
-    //                 path,                    // path
-    //                 false                    // payerIsUser
-    //             );
-    //         }
-            
-    //         // Execute the commands
-    //         uint256 deadline = block.timestamp + DEADLINE;
-    //         IUniversalRouter(i_universalRouter).execute{value: msg.value}(commands, inputs, deadline);
-    //     }
-        
-    //     // For simplicity, we return the expected output amount
-    //     // In production, you'd want to check the actual output amount
-    //     return (expectedOut, protocol);
-    // }
+    
 }
