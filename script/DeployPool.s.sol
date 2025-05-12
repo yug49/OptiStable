@@ -3,6 +3,7 @@ pragma solidity  ^0.8.20;
 
 import {Script, console} from "forge-std/Script.sol";
 import {Pool} from "../src/Pool.sol";
+import {HelperConfig} from "./HelperConfig.s.sol";
 
 /**
  * @title DeployPool
@@ -11,17 +12,19 @@ import {Pool} from "../src/Pool.sol";
  */
 
 contract DeployPool is Script {
-    // HelperConfig public helperConfig;
     Pool public pool;
+    HelperConfig public helperConfig;
 
     function run()
         external
     {
-        vm.startBroadcast(msg.sender);
+        vm.startBroadcast();
         pool = new Pool();
+        helperConfig = new HelperConfig();
         vm.stopBroadcast();
 
         console.log("Pool deployed to: ", address(pool));
-        console.log("OTokens Registry: ", address(pool.oTokensRegistry()));
+        console.log("OTokens Registry deployed to: ", address(pool.oTokensRegistry()));
+        console.log("HelperConfig deployed to: ", address(helperConfig));
     }
 }
