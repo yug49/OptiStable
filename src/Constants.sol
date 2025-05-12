@@ -24,9 +24,9 @@ uint8 constant EURC_DECIMALS = 6;
 address constant DAI = 0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb;
 uint8 constant DAI_DECIMALS = 18;
 //oTokens
-address constant oETH;
-address constant oETH_DECIMALS = 18;
-address constant oUSDC = 0x4F5C8D7A2E3B9F1D6E5C4A0B2F3C8D7A2E3B9F1D;
+// address constant oETH;
+uint8 constant oETH_DECIMALS = 18;
+// address constant oUSDC = 0x4F5C8D7A2E3B9F1D6E5C4A0B2F3C8D7A2E3B9F1D;
 uint8 constant oUSDC_DECIMALS = 6;
 
 contract TickSpacings {
