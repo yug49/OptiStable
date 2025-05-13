@@ -35,5 +35,4 @@ contract oEURC is ERC20, ERC20Burnable, Ownable {
     function decimals() public pure override returns (uint8) {
         return 6;
     }
-    
 }

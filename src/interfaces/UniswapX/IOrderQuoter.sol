@@ -53,28 +53,21 @@ interface IUniswapXQuoter {
      * @param sig The order signature
      * @return result The ResolvedOrder
      */
-    function quote(bytes calldata order, bytes calldata sig) 
-        external 
-        returns (ResolvedOrder memory result);
+    function quote(bytes calldata order, bytes calldata sig) external returns (ResolvedOrder memory result);
 
     /**
      * @notice Convenience function for quoting token output amounts directly
      * @param tokenIn Address of the input token
-     * @param tokenOut Address of the output token  
+     * @param tokenOut Address of the output token
      * @param amountIn Amount of input token
      * @return amountOut Amount of output tokens that would be received
      */
-    function quoteAmountOut(address tokenIn, address tokenOut, uint256 amountIn)
-        external
-        returns (uint256 amountOut);
+    function quoteAmountOut(address tokenIn, address tokenOut, uint256 amountIn) external returns (uint256 amountOut);
 
     /**
      * @notice Reactor callback function
      * @param resolvedOrders The resolved orders
      * @param extraData Additional data passed to the callback
      */
-    function reactorCallback(
-        ResolvedOrder[] calldata resolvedOrders,
-        bytes calldata extraData
-    ) external pure;
+    function reactorCallback(ResolvedOrder[] calldata resolvedOrders, bytes calldata extraData) external pure;
 }

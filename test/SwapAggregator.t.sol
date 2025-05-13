@@ -23,9 +23,10 @@ import {
     EURC,
     DAI,
     TickSpacings,
-    AERODROME_MULTI_ROUTER,
+    AERODROME_MIXED_QUOTER,
     UNISWAP_UNIVERSAL_ROUTER,
-    UNISWAP_V3_QUOTER_V2
+    UNISWAP_V3_QUOTER_V2,
+    SWAP_ROUTER
 } from "../src/Constants.sol";
 
 contract SwapAggregatorTest is Test, TickSpacings {
@@ -44,12 +45,11 @@ contract SwapAggregatorTest is Test, TickSpacings {
 
         swapAggregator = new SwapAggregator(
             AERODROME_ROUTER,
+            SWAP_ROUTER,
             UNISWAP_V2_ROUTER,
             UNISWAP_V3_QUOTER_V2,
-            UNISWAP_V4_ROUTER,
             UNISWAP_V4_QUOTER,
-            FACTORY_REGISTRY,
-            AERODROME_MULTI_ROUTER,
+            AERODROME_MIXED_QUOTER,
             UNISWAP_UNIVERSAL_ROUTER
         );
 
@@ -74,7 +74,7 @@ contract SwapAggregatorTest is Test, TickSpacings {
         address _tokenIn = USDC;
         address _tokenOut = EURC;
 
-        uint256 amountOut = IMixedRouteQuoterV1(AERODROME_MULTI_ROUTER).quoteExactInputSingleV2(
+        uint256 amountOut = IMixedRouteQuoterV1(AERODROME_MIXED_QUOTER).quoteExactInputSingleV2(
             IMixedRouteQuoterV1.QuoteExactInputSingleV2Params({
                 tokenIn: _tokenIn,
                 tokenOut: _tokenOut,
@@ -96,7 +96,7 @@ contract SwapAggregatorTest is Test, TickSpacings {
 
         for (uint256 tickSpacing = 0; tickSpacing < tickSpacings.length; tickSpacing++) {
             console.log("tick spacing:", tickSpacings[tickSpacing]);
-            (uint256 amountOut,,,) = IMixedRouteQuoterV1(AERODROME_MULTI_ROUTER).quoteExactInputSingleV3(
+            (uint256 amountOut,,,) = IMixedRouteQuoterV1(AERODROME_MIXED_QUOTER).quoteExactInputSingleV3(
                 IMixedRouteQuoterV1.QuoteExactInputSingleV3Params({
                     tokenIn: _tokenIn,
                     tokenOut: _tokenOut,
@@ -106,7 +106,7 @@ contract SwapAggregatorTest is Test, TickSpacings {
                 })
             );
             console.log("Aerodrome amount out:", amountOut);
-            if(amountOut > amountMax) {
+            if (amountOut > amountMax) {
                 amountMax = amountOut;
             }
         }
@@ -125,7 +125,7 @@ contract SwapAggregatorTest is Test, TickSpacings {
             int24 tickSpacing = aerodromeTickSpacings[i];
 
             if (tickSpacing & VOLATILE_BITMASK != 0) {
-                uint256 amountHere = IMixedRouteQuoterV1(AERODROME_MULTI_ROUTER).quoteExactInputSingleV2(
+                uint256 amountHere = IMixedRouteQuoterV1(AERODROME_MIXED_QUOTER).quoteExactInputSingleV2(
                     IMixedRouteQuoterV1.QuoteExactInputSingleV2Params({
                         tokenIn: _tokenIn,
                         tokenOut: _tokenOut,
@@ -138,7 +138,7 @@ contract SwapAggregatorTest is Test, TickSpacings {
                     amountOut = amountHere;
                 }
             } else if (tickSpacing & STABLE_BITMASK != 0) {
-                uint256 amountHere = IMixedRouteQuoterV1(AERODROME_MULTI_ROUTER).quoteExactInputSingleV2(
+                uint256 amountHere = IMixedRouteQuoterV1(AERODROME_MIXED_QUOTER).quoteExactInputSingleV2(
                     IMixedRouteQuoterV1.QuoteExactInputSingleV2Params({
                         tokenIn: _tokenIn,
                         tokenOut: _tokenOut,
@@ -152,7 +152,7 @@ contract SwapAggregatorTest is Test, TickSpacings {
                 }
             } else {
                 /// the outputs of prior swaps become the inputs to subsequent ones
-                (uint256 amountHere,,,) = IMixedRouteQuoterV1(AERODROME_MULTI_ROUTER).quoteExactInputSingleV3(
+                (uint256 amountHere,,,) = IMixedRouteQuoterV1(AERODROME_MIXED_QUOTER).quoteExactInputSingleV3(
                     IMixedRouteQuoterV1.QuoteExactInputSingleV3Params({
                         tokenIn: _tokenIn,
                         tokenOut: _tokenOut,
@@ -169,7 +169,7 @@ contract SwapAggregatorTest is Test, TickSpacings {
         }
 
         vm.prank(USER);
-        (uint256 actualAmountOut,) = swapAggregator.getAmountOutAerodrome(USDC, EURC, _amountIn, address(this));
+        (uint256 actualAmountOut,,) = swapAggregator.getAmountOutAerodrome(USDC, EURC, _amountIn, address(this));
         console.log("Aerodrome amount out:", actualAmountOut);
         assertEq(actualAmountOut, amountOut, "Aerodrome amount out is incorrect");
     }
@@ -203,7 +203,8 @@ contract SwapAggregatorTest is Test, TickSpacings {
         address hook = 0x5cd525c621AFCa515Bf58631D4733fbA7B72Aae4;
 
         vm.prank(USER);
-        (uint256 amountOut,) = swapAggregator.getAmountOutUniswapV4FromSpecificPool(_tokenIn, _tokenOut, _amountIn, fee, tickSpacing, hook);
+        (uint256 amountOut,) =
+            swapAggregator.getAmountOutUniswapV4FromSpecificPool(_tokenIn, _tokenOut, _amountIn, fee, tickSpacing, hook);
         console.log("Uniswap V4 amount out:", amountOut);
     }
 
@@ -242,5 +243,4 @@ contract SwapAggregatorTest is Test, TickSpacings {
     //         return 0; // Return 0 if the call fails
     //     }
     // }
-
 }

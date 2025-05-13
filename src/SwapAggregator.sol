@@ -5,29 +5,24 @@ pragma solidity ^0.8.20;
 import {IERC20} from "./interfaces/IERC20.sol";
 import {IRouter} from "../lib/contracts/contracts/interfaces/IRouter.sol";
 import {IUniswapV2Router02} from "../lib/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
-import {IV4Router} from "../lib/v4-periphery/src/interfaces/IV4Router.sol";
 import {IV4Quoter} from "../lib/v4-periphery/src/interfaces/IV4Quoter.sol";
 import {PoolKey} from "../lib/v4-periphery/lib/v4-core/src/types/PoolKey.sol";
 import {Currency} from "../lib/v4-periphery/lib/v4-core/src/types/Currency.sol";
 import {PathKey} from "../lib/v4-periphery/src/libraries/PathKey.sol";
 import {IHooks} from "../lib/v4-periphery/lib/v4-core/src/interfaces/IHooks.sol";
-import {IFactoryRegistry} from "../lib/contracts/contracts/interfaces/factories/IFactoryRegistry.sol";
 import {TickSpacings} from "./Constants.sol";
 import {IMixedRouteQuoterV1} from "./interfaces/ICL/IMixedRouteQuoterV1.sol";
-import {IUniswapXQuoter} from "./interfaces/IUniswapXQuoter.sol";
-import {IUniswapXReactor} from "./interfaces/IUniswapXReactor.sol";
 import {IQuoterV2} from "../lib/v3-periphery/contracts/interfaces/IQuoterV2.sol";
 import {IUniversalRouter} from "./interfaces/IUniversalRouter.sol";
 import {PoolKey} from "../lib/v4-periphery/lib/v4-core/src/types/PoolKey.sol";
-import {IHooks} from "../lib/v4-periphery/lib/v4-core/src/interfaces/IHooks.sol";
-import {Pool} from "./Pool.sol";
 import {DEFAULT_FACTORY} from "./Constants.sol";
 import {ISwapRouter} from "./interfaces/ISwapRouter.sol";
 import {IV4Router} from "../lib/v4-periphery/src/interfaces/IV4Router.sol";
 import {Commands} from "./helpers/Commands.sol";
+import {SafeCast} from "../lib/openzeppelin-contracts/contracts/utils/math/SafeCast.sol";
 
 /**
- * @title Swap Aggregartor to manage swap functionalities
+ * @title Swap Aggregator to manage swap functionalities
  * @author Yug Agarwal
  * @dev finds the optimal route of swap
  */
@@ -41,27 +36,24 @@ contract SwapAggregator is TickSpacings {
     error SwapAggregator__InvalidTickSpacing();
     error SwapAggregator__PoolLocked();
 
-    address public immutable i_aerodomeRouter;
+    address public immutable i_aerodromeRouter;
     address public immutable i_swapRouter;
-    address public immutable i_uniswapV2Router;
-    address public immutable i_uniswapV4Router;
     address public immutable i_uniswapV4Quoter;
-    address public immutable i_factoryRegistry;
-    address public immutable i_aerodromeMultiRouter;
+    address public immutable i_aerodromeMixedQuoter;
     address public immutable i_universalRouter;
     address public immutable i_uniswapV3Quoter;
-    address public immutable pool;
+    address public immutable i_uniswapV2Router;
     LockStatus private lockStatus;
-    address public owner;
+
     uint256 private constant DEADLINE = 20 minutes;
     uint24 private constant DEFAULT_UNISWAP_FEE = 3000; //0.3 %
     int24 constant VOLATILE_BITMASK = 4194304;
     int24 constant STABLE_BITMASK = 2097152;
 
     enum SwapProtocol {
-        AERODOME_V1_STABLE,
-        AERODOME_V1_VOLATILE,
-        AERODOME_V2,
+        AERODROME_V1_STABLE,
+        AERODROME_V1_VOLATILE,
+        AERODROME_V2,
         UNISWAP_X,
         UNISWAP_V2,
         UNISWAP_V3,
@@ -94,38 +86,29 @@ contract SwapAggregator is TickSpacings {
     }
 
     /**
-     * @param _aerodromeRouter Address of the Aerodrome router
-     * @param _uniswapV2Router Address of the Uniswap V2 router
-     * @param _uniswapV4Router Address of the Uniswap V4 router
-     * @param _uniswapV4Quoter Address of the Uniswap V4 quoter
-     * @param _factoryRegistry Address of the factory registry
-     * @dev Constructor to initialize the contract with router addresses
+     * @param _aerodromeRouter aerodrome router address
+     * @param _swapRouter swap router address
+     * @param _uniswapV3Quoter Uniswap V3 quoter address
+     * @param _uniswapV4Quoter Uniswap V4 quoter address
+     * @param _aerodromeMixedQuoter Aerodrome mixed quoter address
+     * @param _universalRouter Universal router address
      */
     constructor(
         address _aerodromeRouter,
         address _swapRouter,
         address _uniswapV2Router,
         address _uniswapV3Quoter,
-        address _uniswapV4Router,
         address _uniswapV4Quoter,
-        address _factoryRegistry,
-        address _aerodromeMultiRouter,
-        address _universalRouter,
-        address _pool
+        address _aerodromeMixedQuoter,
+        address _universalRouter
     ) {
-        i_aerodomeRouter = _aerodromeRouter;
+        i_aerodromeRouter = _aerodromeRouter;
         i_swapRouter = _swapRouter;
         i_uniswapV2Router = _uniswapV2Router;
-        i_uniswapV4Router = _uniswapV4Router;
         i_uniswapV4Quoter = _uniswapV4Quoter;
-        i_factoryRegistry = _factoryRegistry;
-        i_aerodromeMultiRouter = _aerodromeMultiRouter;
+        i_aerodromeMixedQuoter = _aerodromeMixedQuoter;
         i_universalRouter = _universalRouter;
         i_uniswapV3Quoter = _uniswapV3Quoter;
-        pool = _pool;
-
-        // Set the owner of the contract to the deployer
-        owner = msg.sender;
     }
 
     /**
@@ -152,7 +135,7 @@ contract SwapAggregator is TickSpacings {
             int24 _tickSpacing = aerodromeTickSpacings[i];
 
             if (_tickSpacing & VOLATILE_BITMASK != 0) {
-                uint256 amountHere = IMixedRouteQuoterV1(i_aerodromeMultiRouter).quoteExactInputSingleV2(
+                uint256 amountHere = IMixedRouteQuoterV1(i_aerodromeMixedQuoter).quoteExactInputSingleV2(
                     IMixedRouteQuoterV1.QuoteExactInputSingleV2Params({
                         tokenIn: _tokenIn,
                         tokenOut: _tokenOut,
@@ -162,12 +145,12 @@ contract SwapAggregator is TickSpacings {
                 );
                 if (amountHere > amountOut) {
                     amountOut = amountHere;
-                    protocol = SwapProtocol.AERODOME_V1_VOLATILE;
+                    protocol = SwapProtocol.AERODROME_V1_VOLATILE;
                     tickSpacing = 0;
                 }
             }
             if (_tickSpacing & STABLE_BITMASK != 0) {
-                uint256 amountHere = IMixedRouteQuoterV1(i_aerodromeMultiRouter).quoteExactInputSingleV2(
+                uint256 amountHere = IMixedRouteQuoterV1(i_aerodromeMixedQuoter).quoteExactInputSingleV2(
                     IMixedRouteQuoterV1.QuoteExactInputSingleV2Params({
                         tokenIn: _tokenIn,
                         tokenOut: _tokenOut,
@@ -177,13 +160,13 @@ contract SwapAggregator is TickSpacings {
                 );
                 if (amountHere > amountOut) {
                     amountOut = amountHere;
-                    protocol = SwapProtocol.AERODOME_V1_STABLE;
+                    protocol = SwapProtocol.AERODROME_V1_STABLE;
                     tickSpacing = 0;
                 }
             }
             if (_tickSpacing & VOLATILE_BITMASK == 0 && _tickSpacing & STABLE_BITMASK == 0) {
                 /// the outputs of prior swaps become the inputs to subsequent ones
-                (uint256 amountHere,,,) = IMixedRouteQuoterV1(i_aerodromeMultiRouter).quoteExactInputSingleV3(
+                (uint256 amountHere,,,) = IMixedRouteQuoterV1(i_aerodromeMixedQuoter).quoteExactInputSingleV3(
                     IMixedRouteQuoterV1.QuoteExactInputSingleV3Params({
                         tokenIn: _tokenIn,
                         tokenOut: _tokenOut,
@@ -194,7 +177,7 @@ contract SwapAggregator is TickSpacings {
                 );
                 if (amountHere > amountOut) {
                     amountOut = amountHere;
-                    protocol = SwapProtocol.AERODOME_V2;
+                    protocol = SwapProtocol.AERODROME_V2;
                     tickSpacing = _tickSpacing;
                 }
             }
@@ -242,7 +225,7 @@ contract SwapAggregator is TickSpacings {
 
         amountOut = IERC20(_tokenOut).balanceOf(_recipient) - amountBefore;
 
-        emit OptimalSwap(_tokenIn, _tokenOut, amountOut, _recipient, SwapProtocol.AERODOME_V2);
+        emit OptimalSwap(_tokenIn, _tokenOut, amountOut, _recipient, SwapProtocol.AERODROME_V2);
     }
 
     /**
@@ -267,13 +250,13 @@ contract SwapAggregator is TickSpacings {
         uint256 amountOutMin = 0; // Set your desired minimum amount out
         uint256 balanceBefore = IERC20(_tokenOut).balanceOf(_recipient);
         IERC20(_tokenIn).transferFrom(msg.sender, address(this), _amountIn);
-        IERC20(_tokenIn).approve(i_aerodomeRouter, _amountIn);
-        IRouter(i_aerodomeRouter).swapExactTokensForTokens(
+        IERC20(_tokenIn).approve(i_aerodromeRouter, _amountIn);
+        IRouter(i_aerodromeRouter).swapExactTokensForTokens(
             _amountIn, amountOutMin, routes, _recipient, block.timestamp + DEADLINE
         );
 
         amountOut = IERC20(_tokenOut).balanceOf(_recipient) - balanceBefore;
-        emit OptimalSwap(_tokenIn, _tokenOut, amountOut, _recipient, SwapProtocol.AERODOME_V1_STABLE);
+        emit OptimalSwap(_tokenIn, _tokenOut, amountOut, _recipient, SwapProtocol.AERODROME_V1_STABLE);
     }
 
     /**
@@ -298,13 +281,13 @@ contract SwapAggregator is TickSpacings {
         uint256 amountOutMin = 0; // Set your desired minimum amount out
         uint256 balanceBefore = IERC20(_tokenOut).balanceOf(_recipient);
         IERC20(_tokenIn).transferFrom(msg.sender, address(this), _amountIn);
-        IERC20(_tokenIn).approve(i_aerodomeRouter, _amountIn);
-        IRouter(i_aerodomeRouter).swapExactTokensForTokens(
+        IERC20(_tokenIn).approve(i_aerodromeRouter, _amountIn);
+        IRouter(i_aerodromeRouter).swapExactTokensForTokens(
             _amountIn, amountOutMin, routes, _recipient, block.timestamp + DEADLINE
         );
 
         amountOut = IERC20(_tokenOut).balanceOf(_recipient) - balanceBefore;
-        emit OptimalSwap(_tokenIn, _tokenOut, amountOut, _recipient, SwapProtocol.AERODOME_V1_VOLATILE);
+        emit OptimalSwap(_tokenIn, _tokenOut, amountOut, _recipient, SwapProtocol.AERODROME_V1_VOLATILE);
     }
 
     /**
@@ -351,9 +334,7 @@ contract SwapAggregator is TickSpacings {
             commands = abi.encodePacked(bytes1(uint8(Commands.V2_SWAP_EXACT_IN)));
 
             // Create path
-            address[] memory path = new address[](2);
-            path[0] = tokenIn;
-            path[1] = tokenOut;
+            address[] memory path = createPath(tokenIn, tokenOut);
 
             // Pack input data
             inputs[0] = abi.encode(
@@ -398,7 +379,7 @@ contract SwapAggregator is TickSpacings {
                 poolKey, // poolKey
                 zeroForOne, // zeroForOne
                 true, // exactInput (true for exactInput)
-                int256(int256(amountIn)), // amountSpecified (cast to int256)
+                SafeCast.toInt256(amountIn), // amountSpecified (cast to int256)
                 0, // sqrtPriceLimitX96 (0 = no price limit)
                 "0x", // hookData
                 recipient // recipient
@@ -449,6 +430,9 @@ contract SwapAggregator is TickSpacings {
      * @param tickSpacings array of tick spacings of all available pools of a given token pair in uniswap v3
      * @param hooks array of hooks of all available pools of a given token pair in uniswap v3
      * @return amountOut amount of token received after the swap
+     * @return poolFee fee tier for the pool
+     * @return tickSpacing spacing between ticks in the pool
+     * @return hook address of the hook to be used
      * @return protocol protocol used for the swap
      */
     function getAmountOutUniswapV4(
@@ -458,7 +442,7 @@ contract SwapAggregator is TickSpacings {
         uint24[] memory poolFees,
         int24[] memory tickSpacings,
         address[] memory hooks
-    ) public returns (uint256 amountOut, SwapProtocol protocol) {
+    ) public returns (uint256 amountOut, uint24 poolFee, int24 tickSpacing, address hook, SwapProtocol protocol) {
         if (amountIn == 0) revert SwapAggregator__InvalidAmount();
         if (poolFees.length == 0) revert SwapAggregator__InvalidPoolFees();
         if (tokenIn == address(0) || tokenOut == address(0)) revert SwapAggregator__InvalidTokenAddresses();
@@ -469,12 +453,15 @@ contract SwapAggregator is TickSpacings {
 
         for (uint256 i = 0; i < poolFees.length; i++) {
             uint24 fee = poolFees[i];
-            int24 tickSpacing = tickSpacings[i];
-            address hook = hooks[i];
+            int24 thisTickSpacing = tickSpacings[i];
+            address thisHook = hooks[i];
             (uint256 amountHere,) =
-                getAmountOutUniswapV4FromSpecificPool(tokenIn, tokenOut, amountIn, fee, tickSpacing, hook);
+                getAmountOutUniswapV4FromSpecificPool(tokenIn, tokenOut, amountIn, fee, thisTickSpacing, thisHook);
             if (amountHere > amountOut) {
                 amountOut = amountHere;
+                poolFee = fee;
+                tickSpacing = thisTickSpacing;
+                hook = thisHook;
             }
         }
 
@@ -538,11 +525,12 @@ contract SwapAggregator is TickSpacings {
      * @param amountIn amount of token to swap
      * @param poolFees array of pool fees of all available pools of a given token pair in uniswap v3
      * @return amountOut amount of token received after the swap
+     * @return poolFee fee tier for the pool
      * @return protocol protocol used for the swap
      */
     function getAmountOutUniswapV3(address tokenIn, address tokenOut, uint256 amountIn, uint24[] memory poolFees)
         public
-        returns (uint256 amountOut, SwapProtocol protocol)
+        returns (uint256 amountOut, uint24 poolFee, SwapProtocol protocol)
     {
         if (amountIn == 0) revert SwapAggregator__InvalidAmount();
         if (poolFees.length == 0) revert SwapAggregator__InvalidPoolFees();
@@ -554,6 +542,7 @@ contract SwapAggregator is TickSpacings {
             (uint256 amountHere,) = getAmountOutUniswapV3FromSpecificPool(tokenIn, tokenOut, amountIn, fee);
             if (amountHere > amountOut) {
                 amountOut = amountHere;
+                poolFee = fee;
             }
         }
 
@@ -633,6 +622,4 @@ contract SwapAggregator is TickSpacings {
         path[0] = _tokenIn;
         path[1] = _tokenOut;
     }
-
-    
 }

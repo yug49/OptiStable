@@ -12,7 +12,6 @@ import {OTokensRegistry} from "./OTokensRegistry.sol";
  * @notice This contract is used to manage the liquidity pool for the Opti tokens.
  * @dev The contract allows users to add liquidity to the pool and this liqudity can be used to swap tokens.
  */
-
 contract Pool is Ownable {
     error Pool__Locked();
     error Pool__AmountInvalid();
@@ -32,7 +31,7 @@ contract Pool is Ownable {
     OTokensRegistry public oTokensRegistry;
 
     modifier lock() {
-        if(status == LockStatus.LOCKED) {
+        if (status == LockStatus.LOCKED) {
             revert Pool__Locked();
         }
         status = LockStatus.LOCKED;
@@ -41,15 +40,15 @@ contract Pool is Ownable {
     }
 
     modifier onlyAllowedToken(address _token) {
-        if(oTokensRegistry.tokenToOToken(_token) == address(0)) {
+        if (oTokensRegistry.tokenToOToken(_token) == address(0)) {
             revert Pool__TokenAddressInvalid();
         }
         _;
     }
 
     modifier onlyAllowedTokens(address[] memory _tokens) {
-        for(uint256 i = 0; i < _tokens.length; i++) {
-            if(oTokensRegistry.tokenToOToken(_tokens[i]) == address(0)) {
+        for (uint256 i = 0; i < _tokens.length; i++) {
+            if (oTokensRegistry.tokenToOToken(_tokens[i]) == address(0)) {
                 revert Pool__TokenAddressInvalid();
             }
         }
@@ -60,15 +59,16 @@ contract Pool is Ownable {
         oTokensRegistry = new OTokensRegistry();
     }
 
-    function addLiquidity(
-        address _token,
-        uint256 _amount,
-        address _recipient
-    ) external lock onlyAllowedToken(_token) returns (bool) {
-        if(_amount == 0) {
+    function addLiquidity(address _token, uint256 _amount, address _recipient)
+        external
+        lock
+        onlyAllowedToken(_token)
+        returns (bool)
+    {
+        if (_amount == 0) {
             revert Pool__AmountInvalid();
         }
-        if(_token == address(0)) {
+        if (_token == address(0)) {
             revert Pool__AmountInvalid();
         }
 
@@ -79,15 +79,16 @@ contract Pool is Ownable {
         return true;
     }
 
-    function removeLiquidity(
-        address _token,
-        uint256 _amount,
-        address _recipient
-    ) external lock onlyAllowedToken(_token) returns (bool) {
-        if(_amount == 0) {
+    function removeLiquidity(address _token, uint256 _amount, address _recipient)
+        external
+        lock
+        onlyAllowedToken(_token)
+        returns (bool)
+    {
+        if (_amount == 0) {
             revert Pool__AmountInvalid();
         }
-        if(_token == address(0)) {
+        if (_token == address(0)) {
             revert Pool__AmountInvalid();
         }
 
@@ -99,49 +100,45 @@ contract Pool is Ownable {
 
         return true;
     }
-    
 
-    function addAllowedTokens(
-        address _token,
-        address _oToken
-    ) external lock onlyOwner returns (bool) {
-        if(_token == address(0)) {
+    function addAllowedTokens(address _token, address _oToken) external lock onlyOwner returns (bool) {
+        if (_token == address(0)) {
             revert Pool__AmountInvalid();
         }
 
-        if(!oTokensRegistry.addTokenPair(_token, _oToken)) {
+        if (!oTokensRegistry.addTokenPair(_token, _oToken)) {
             revert Pool__AdditionFailed(_token, _oToken);
         }
         return true;
     }
 
-    function removeAllowedTokens(
-        address _token
-    ) external lock onlyOwner returns (bool) {
-        if(_token == address(0)) {
+    function removeAllowedTokens(address _token) external lock onlyOwner returns (bool) {
+        if (_token == address(0)) {
             revert Pool__AmountInvalid();
         }
-        if(!oTokensRegistry.removeTokenPair(_token)) {
+        if (!oTokensRegistry.removeTokenPair(_token)) {
             revert Pool__RemoveFailed(_token, address(0));
         }
         return true;
     }
 
-    function addAllowedTokens(
-        address[] memory _tokens,
-        address[] memory _oTokens
-    ) external lock onlyOwner returns (bool) {
-        if(_tokens.length != _oTokens.length) {
+    function addAllowedTokens(address[] memory _tokens, address[] memory _oTokens)
+        external
+        lock
+        onlyOwner
+        returns (bool)
+    {
+        if (_tokens.length != _oTokens.length) {
             revert Pool__TokensLengthShouldBeEqualToOTokensLength();
         }
-        if(_tokens.length == 0) {
+        if (_tokens.length == 0) {
             revert Pool__AmountInvalid();
         }
-        for(uint256 i = 0; i < _tokens.length; i++) {
-            if(_tokens[i] == address(0) || _oTokens[i] == address(0)) {
+        for (uint256 i = 0; i < _tokens.length; i++) {
+            if (_tokens[i] == address(0) || _oTokens[i] == address(0)) {
                 revert Pool__TokenAddressInvalid();
             }
-            if(!oTokensRegistry.addTokenPair(_tokens[i], _oTokens[i])) {
+            if (!oTokensRegistry.addTokenPair(_tokens[i], _oTokens[i])) {
                 revert Pool__AdditionFailed(_tokens[i], _oTokens[i]);
             }
         }
@@ -150,20 +147,20 @@ contract Pool is Ownable {
 
     /* Getter Functions */
 
-    function getOTokenAddress(
-        address _token
-    ) external view onlyAllowedToken(_token) returns (address) {
+    function getOTokenAddress(address _token) external view onlyAllowedToken(_token) returns (address) {
         return oTokensRegistry.tokenToOToken(_token);
     }
 
-    function getOTokenAddresses(
-        address[] memory _tokens
-    ) external view onlyAllowedTokens(_tokens) returns (address[] memory) {
+    function getOTokenAddresses(address[] memory _tokens)
+        external
+        view
+        onlyAllowedTokens(_tokens)
+        returns (address[] memory)
+    {
         address[] memory oTokens = new address[](_tokens.length);
-        for(uint256 i = 0; i < _tokens.length; i++) {
+        for (uint256 i = 0; i < _tokens.length; i++) {
             oTokens[i] = oTokensRegistry.tokenToOToken(_tokens[i]);
         }
         return oTokens;
     }
-    
 }

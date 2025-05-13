@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-
 // BASE MAINNET
 // Aerodrome
 address constant AERODROME_ROUTER = 0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43;
@@ -38,7 +37,7 @@ contract TickSpacings {
     int24 constant AERODROME_100 = 100;
     int24 constant AERODROME_200 = 200;
     int24 constant AERODROME_2000 = 2000;
-    
+
     function getAerodromeTickSpacings() public pure returns (int24[] memory) {
         int24[] memory tickSpacings = new int24[](6);
         tickSpacings[0] = AERODROME_1;

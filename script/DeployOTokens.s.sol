@@ -9,12 +9,7 @@ import {oUSDC} from "../src/OTokens/oUSDC.sol";
 contract DeployOTokens is Script {
     constructor() {}
 
-    function run()
-        external
-        returns (
-            address[] memory oTokens
-        )
-    {
+    function run() external returns (address[] memory oTokens) {
         vm.startBroadcast(msg.sender);
         oETH _oETH = new oETH();
         console.log("oETH deployed to: ", address(_oETH));

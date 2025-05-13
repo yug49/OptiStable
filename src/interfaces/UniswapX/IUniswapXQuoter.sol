@@ -7,7 +7,7 @@ interface IUniswapXQuoter {
         address token;
         uint256 amount;
     }
-    
+
     struct OrderInfo {
         address reactor;
         address swapper;
@@ -16,7 +16,7 @@ interface IUniswapXQuoter {
         address additionalValidationContract;
         bytes additionalValidationData;
     }
-    
+
     struct QuoteResult {
         OrderInfo info;
         TokenAmount[] input;

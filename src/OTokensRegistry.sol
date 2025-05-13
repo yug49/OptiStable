@@ -15,7 +15,7 @@ contract OTokensRegistry is Ownable {
 
     constructor() Ownable(msg.sender) {}
 
-    struct TokenPairs{
+    struct TokenPairs {
         address token;
         address oToken;
     }
@@ -44,7 +44,7 @@ contract OTokensRegistry is Ownable {
         if (_token == address(0) || _oToken == address(0)) {
             revert OTokensRegistry__NotZeroAddress();
         }
-        if( _token == _oToken) {
+        if (_token == _oToken) {
             revert OTokensRegistry__NotValidTokenPair();
         }
         for (uint256 i = 0; i < tokensPairs.length; i++) {
@@ -59,10 +59,10 @@ contract OTokensRegistry is Ownable {
     }
 
     function removeTokenPair(address _token) external onlyOwner returns (bool) {
-        if(_token == address(0)) {
+        if (_token == address(0)) {
             revert OTokensRegistry__NotZeroAddress();
         }
-        
+
         for (uint256 i = 0; i < tokensPairs.length; i++) {
             if (tokensPairs[i].token == _token) {
                 emit TokenPairRemoved(_token, tokensPairs[i].oToken);
